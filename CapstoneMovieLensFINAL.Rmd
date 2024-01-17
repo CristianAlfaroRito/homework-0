@@ -1,0 +1,688 @@
+---
+title: "Movie Ratings Analysis"
+author: "Cristian Alfaro"
+date: "08-01-2024"
+output:
+  pdf_document:
+---
+
+```{r, echo = TRUE}
+knitr::opts_chunk$set(echo = TRUE)  
+```
+
+# Introduction
+
+This report presents a detailed analysis of the MovieLens 10m data set. The analysis focus is on exploring movie ratings and providing insights through data manipulation, visualization and predictive modeling.
+
+## Setting up the environment
+
+```{r}
+if(!require(tidyverse)) install.packages("tidyverse", repos = "http://cran.us.r-project.org")  
+if(!require(caret)) install.packages("caret", repos = "http://cran.us.r-project.org")  
+
+library(tidyverse)  
+library(caret)  
+options(timeout = 120)  
+```
+
+# Data Loading and Pre processing
+
+In this section, we will load and preprocess the data from the MovieLens 10M data set. This data set comprises two main files: one containing ratings given by users to movies, and the other containing movie details like titles and genres. The pre processing steps include reading the data, splitting strings, converting data types, and merging th e ratings with the movie details.
+
+## Data Acquisition
+
+```{r}
+# Path for the zipped dataset  
+dl <- "ml-10M100K.zip"  
+if(!file.exists(dl))
+  download.file("https://files.grouplens.org/datasets/movielens/ml-10m.zip", dl)  
+
+# Path for ratings data  
+ratings_file <- "ml-10M100K/ratings.dat"  
+if(!file.exists(ratings_file))
+  unzip(dl, ratings_file)  
+
+# Path for movies data  
+movies_file <- "ml-10M100K/movies.dat"  
+if(!file.exists(movies_file))
+  unzip(dl, movies_file)
+
+# Reading the ratings data
+ratings <- as.data.frame(str_split(read_lines(ratings_file), fixed("::"), simplify = TRUE),
+                         stringsAsFactors = FALSE)  
+
+# Assigning column names to the ratings data frame  
+colnames(ratings) <- c("userId", "movieId", "rating", "timestamp")  
+
+# Converting the data types of each column in the ratings data frame  
+ratings <- ratings %>%  
+  mutate(userId = as.integer(userId),  
+         movieId = as.integer(movieId),  
+         rating = as.numeric(rating),  
+         timestamp = as.integer(timestamp))  
+
+# Reading the Movies Data
+movies <- as.data.frame(str_split(read_lines(movies_file), fixed("::"), simplify = TRUE),  
+                        stringsAsFactors = FALSE)  
+
+# Assigning Column Names to the Movies Data Frame  
+colnames(movies) <- c("movieId", "title", "genres")  
+
+# Converting the Data Types of Each Column in the Movies Data Frame    
+movies <- movies %>%  
+  mutate(movieId = as.integer(movieId))  
+
+# Creating a Single Comprehensive Dataset with Both User Ratings and Movie Details  
+movielens <- left_join(ratings, movies, by = "movieId")  
+
+# Final hold-out test set will be 10% of MovieLens data  
+set.seed(1)
+
+# Create partition to divide our data into two parts for testing  
+test_index <- createDataPartition(y = movielens$rating, times = 1, p = 0.1, list = FALSE)  
+
+# Have all the data, but does not include the data in test_index  
+edx <- movielens[-test_index,]  
+
+# Have only the data that corresponds in test_index  
+temp <- movielens[test_index,]  
+
+# Make sure userId and movieId in final hold-out test set are also in edx set  
+final_holdout_test <- temp %>%  
+  semi_join(edx, by = "movieId") %>%  
+  semi_join(edx, by = "userId")  
+
+# Add rows removed from final hold-out test set back into edx set  
+removed <- anti_join(temp, final_holdout_test)  
+edx <- rbind(edx, removed)  
+
+# Removing intermediate variables to keep the work space clean and efficient  
+rm(dl, ratings, movies, test_index, temp, movielens, removed)  
+```
+
+# Exploratory Data Analysis
+
+This section explores the structure and composition of the dataset to understand its characteristics and identify any peculiarities. We will examine the dataset's class, dimensions, unique values, identify any duplicates, and explore the distribution of genres.
+
+## Checking the class and dimensions of the datasets
+
+```{r}
+# Displaying the structure of the dataset  
+str(edx)  
+```
+
+## Checking for unique values
+
+```{r}
+# This helps to understand the dataset in terms of users, movies, and titles  
+n_distinct(edx$userId)  
+n_distinct(edx$movieId)  
+n_distinct(edx$title)  
+```
+
+## Identifying movies with duplicate titles
+
+```{r}
+# Movies sharing the same title but different etities could lead to incorrect information  
+duplicateMovieTitle <- edx %>%
+  select(movieId, title) %>%
+  unique() %>%  
+  group_by(title) %>%  
+  summarise(n=n()) %>%  
+  filter(n>1)  
+
+edx %>%  
+  filter(title==duplicateMovieTitle$title) %>%  
+  select(movieId, genres) %>%  
+  group_by(movieId, genres) %>%  
+  summarise(n=n()) %>%  
+  unique()  
+```
+
+## Extracting all unique genres
+
+```{r}
+# Count of unique genres and count of unique genre combinations  
+genres <- str_extract_all(unique(edx$genres), "[^|]+") %>%  
+  unlist() %>%  
+  unique()
+n_distinct(genres)  
+```
+
+## Data cleaning: Converting timestamp to date format and extracting movie release year
+
+```{r}
+# This step prepares the dataset for more time oriented examination  
+edx <- edx %>%  
+  mutate(reviewDate = round_date(as_datetime(timestamp), unit = "day")) %>%  
+  mutate(title = str_trim(title)) %>%  
+  extract(title, c("shortTitle", "year"), regex = "^(.*) \\(([0-9 \\-]*)\\)$", remove = FALSE) %>%  
+  mutate(year = as.integer(year)) %>%  
+  select(-shortTitle)  
+
+# Calculating the delay in years between the movie review date and the movie's release year  
+edx <- edx %>%  
+  mutate(reviewDelay = year(reviewDate) - year)  
+```
+
+# Data Visualization
+
+In this section, we visually explore different aspects of the dataset to gain insights into the distribution of ratings, average ratings per movie and user, and other interesting trends. Each plot is crafted to provide a clear understanding of specific characteristics of the data.
+
+## Rating Distribution
+
+```{r}
+# This plot shows the distribution of ratings across all movies  
+edx %>%  
+  ggplot(aes(rating)) +  
+  geom_histogram(binwidth=0.5, color="black") +  
+  labs(title = "Ratings Distribution", x = "Rating Value", y = "Count")  
+```
+
+## Average Ratings for Movies
+
+```{r}
+# Depicts how the average ratings are distributed across different movies  
+edx %>%  
+  group_by(movieId) %>%  
+  summarise(mean_rating = mean(rating)) %>%  
+  ggplot(aes(mean_rating)) +  
+  geom_histogram(bins=50, color="black") +  
+  labs(title = "Distribution of Average Ratings for Movies", x = "Mean Rating", y = "Movie Count")  
+```
+
+## Average Ratings Given by Users
+
+```{r}
+# Shows the distribution of average ratings given by individual users  
+edx %>%
+  group_by(userId) %>%  
+  summarise(mean_rating = mean(rating)) %>%  
+  ggplot(aes(mean_rating)) +  
+  geom_histogram(bins=50, color="black") +  
+  labs(title = "Distribution of Average Ratings Given by Users", x = "Mean Rating", y = "User Count")  
+```
+
+## Number of Ratings per User
+
+```{r}
+# Illustrates how many ratings each user has given, on a logarithmic scale for clarity  
+edx %>%  
+  count(userId) %>%  
+  ggplot(aes(n)) +  
+  geom_histogram(bins=50, color="black") +  
+  scale_x_log10() +  
+  labs(title = "Distribution of Number of Ratings per User", x = "Number of Ratings", y = "User Count")    
+```
+
+## Average Rating by Genre
+
+```{r}
+# This plots shows the average rating for each genre, along with error bars  
+genres <- str_extract_all(unique(edx$genres), "[^|]+") %>%  
+  unlist() %>%  
+  unique()  
+
+# Creating a dataframe for individual genres  
+indiv_genres <- as.data.frame(genres)  
+names(indiv_genres) <- c("genre")  
+
+# Calculating the count for each genre in the edx dataframe  
+indiv_genres$n <- sapply(genres, function(g) {  
+  nrow(edx[str_detect(edx$genres, g), ])  
+  })  
+
+# Calculating the mean rating for each genre  
+indiv_genres$meanRating <- sapply(genres, function(g) {  
+  mean(edx[str_detect(edx$genres, g), "rating"])  
+  })  
+
+# Calculating the standard deviation of ratings for each genre  
+indiv_genres$sd <- sapply(genres, function(g) {  
+  sd(edx[str_detect(edx$genres, g), "rating"])  
+  })  
+
+# Computing the standard error for each genres rating  
+indiv_genres$se <- indiv_genres$sd / sqrt(indiv_genres$n)  
+
+# Rearranging the dataframe  
+indiv_genres <- indiv_genres %>%  
+  arrange(desc(n))    
+
+# Data filtering, manipulation, and plotting  
+indiv_genres %>%  
+  filter(genre != "(no genres listed)") %>%  
+  mutate(genre = reorder(genre, meanRating)) %>%  
+  ggplot(aes(x = genre, y = meanRating, ymin=meanRating - 2*se, ymax=meanRating + 2*se)) +  
+  geom_point() +  
+  geom_errorbar() +  
+  theme(axis.text.x = element_text(angle = 90, hjust = 1)) +  
+  labs(title = "Average Rating by Genre", x = "Genre", y = "Average Rating")  
+```
+
+## Average Rating for Movies Across Different Release Years
+
+```{r}
+# Shows the average rating for movies across different release years  
+edx %>% group_by(year) %>%  
+  summarise(rating = mean(rating)) %>%  
+  ggplot(aes(year, rating)) +  
+  geom_point() +  
+  geom_smooth(formula='y~x', method='loess', span = 0.15) +  
+  labs(title = "Average Rating for Movies Across Different Release Years", x = "Release Year", y = "Average Rating")  
+```
+
+## Distribution of Ratings Across Different Release Years
+
+```{r}
+# Shows the number of ratings movies receive across different release years  
+edx %>% group_by(year) %>%  
+  summarise(n = n()) %>%  
+  ggplot(aes(year, n)) +  
+  geom_point() +  
+  scale_y_log10() +  
+  labs(title = "Distribution of Ratings Across Different Release Years", x = "Release Year", y = "Rating Count")  
+```
+
+## Average Rating Trend Over Time Based on Review Dates
+
+```{r}
+# This plot shows the trend of average ratings over time  
+edx %>% group_by(reviewDate) %>%  
+  summarize(mean_rating = mean(rating)) %>%  
+  ggplot(aes(reviewDate, mean_rating)) +  
+  geom_point() +  
+  geom_smooth(formula='y~x', method='loess', span = 0.15) +  
+  labs(title = "Average Rating Trend Over Time Based on Review Dates", x = "Review Date", y = "Average Rating")  
+```
+
+## Average Rating Variance with Review Delays
+
+```{r}
+# Demonstrates how the average rating of movies varies with different review delays  
+edx %>% group_by(reviewDelay) %>%  
+  summarise(mean_rating = mean(rating)) %>%  
+  ggplot(aes(reviewDelay, mean_rating)) +  
+  geom_point() +  
+  labs(title = "Average Rating Variance with Review Delays", x = "Review Delay", y = "Average Rating")  
+```
+
+## Number of Ratings Distributed Across Different Review Delays
+
+```{r}
+# Shows the distribution of the number of ratings over different review delays  
+edx %>% group_by(reviewDelay) %>%  
+  summarise(n = n()) %>%  
+  ggplot(aes(reviewDelay, n)) +  
+  geom_point() +  
+  scale_y_log10()+  
+  labs(title = "Number of Ratings Distributed Across Different Review Delays", x = "Review Delay", y = "Rating Count")  
+```
+
+# Data Modelling
+
+This section outlines the process of setting up our predictive models. We start by defining a function to calculate the Root Mean Squared Error (RMSE), a common measure of prediction accuracy. Then, we prepare our data by creating training and testing datasets.
+
+```{r}
+# Defining the RMSE function for model evaluation  
+RMSE <- function(true_ratings, predicted_ratings) {  
+  sqrt(mean((true_ratings - predicted_ratings)^2, na.rm=TRUE))  
+  }  
+
+# Setting a seed for reproducibility  
+set.seed(1)  
+
+# Creating a partition to split the data into training and testing sets  
+d.index <- createDataPartition(y = edx$rating, times = 1, p = 0.1, list = FALSE)  
+d.train <- edx[-d.index, ]  
+d.test <- edx[d.index, ]  
+
+# Ensuring d.train and d.test are data frames  
+if (!is.data.frame(d.train))  
+  stop("d.train is not a data frame.")  
+
+if (!is.data.frame(d.test))  
+  stop("d.test is not a data frame.")  
+
+# Calculating the average rating in the training data  
+mu_hat <- mean(d.train$rating)  
+```
+
+## Applying the model to the test set
+
+```{r}
+# Here, we predict every rating as the average rating from the training set  
+simple_predictions <- rep(mu_hat, nrow(d.test))  
+```
+
+## M01: Simple Average
+
+```{r}
+# Calculating the RMSE (Root Mean Square Error) for simple predictions  
+rmse.simple <- RMSE(d.test$rating, simple_predictions)
+rmse.simple
+```
+
+## M02: Adding Movie Effect
+
+```{r}
+# Calculating the average movie effect from the training dataset  
+avg.movies <- d.train %>%  
+  group_by(movieId) %>%  
+  summarise(movie_effect = mean(rating - mu_hat))  
+
+# Predicting movie effect on the test dataset  
+predicted.movie_effect <- d.test %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  mutate(pred = mu_hat + movie_effect) %>%  
+  pull(pred)  
+
+# Calculating RMSE (Root Mean Square Error) for the movie effect model  
+rmse.movie <- RMSE(d.test$rating, predicted.movie_effect)  
+rmse.movie  
+```
+
+## M03: Adding User Effect
+
+```{r}
+# Calculating the average user effect from the training dataset  
+avg.users <- d.train %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  group_by(userId) %>%  
+  summarise(user_effect = mean(rating - mu_hat - movie_effect))  
+
+# Predicting user effect on the test dataset  
+predicted.user_effect <- d.test %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  mutate(pred = mu_hat + movie_effect + user_effect) %>%  
+  pull(pred)  
+
+# Calculating RMSE (Root Mean Square Error) for the user effect model  
+rmse.user <- RMSE(predicted.user_effect, d.test$rating)  
+rmse.user  
+```
+
+## M04: Adding Genre Combination Effect
+
+```{r}
+
+# Calculating the average genre combination effect from the training dataset  
+avg.genres <- d.train %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  group_by(genres) %>%  
+  summarise(genre_effect = mean(rating - mu_hat - movie_effect - user_effect))  
+
+# Predicting genre combination effect on the test dataset  
+predicted.genre_effect <- d.test %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  left_join(avg.genres, by = "genres") %>%  
+  mutate(pred = mu_hat + movie_effect + user_effect + genre_effect) %>%  
+  pull(pred)  
+
+# Calculating RMSE (Root Mean Square Error) for the genre combination effect model
+rmse.genre <- RMSE(predicted.genre_effect, d.test$rating)  
+rmse.genre  
+```
+
+## M05: Adding Movie Release Year Effect
+
+```{r}
+# Calculating the average effect of movie release years from the training dataset  
+avg.years <- d.train %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  left_join(avg.genres, by = "genres") %>%  
+  group_by(year) %>%  
+  summarise(release_year_effect = mean(rating - mu_hat - movie_effect - user_effect - genre_effect))  
+
+# Predicting release year effect on the test dataset  
+predicted.release_year_effect <- d.test %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  left_join(avg.genres, by = "genres") %>%  
+  left_join(avg.years, by = "year") %>%  
+  mutate(pred = mu_hat + movie_effect + user_effect + genre_effect + release_year_effect) %>%  
+  pull(pred)  
+
+# Calculating RMSE (Root Mean Square Error) for the release year effect model  
+rmse.year <- RMSE(predicted.release_year_effect, d.test$rating)  
+rmse.year  
+```
+
+## M06: Adding Review Delay Effect
+
+```{r}
+# Calculating the average effect of review delays from the training dataset  
+avg.delays <- d.train %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  left_join(avg.genres, by = "genres") %>%  
+  left_join(avg.years, by = "year") %>%  
+  group_by(reviewDelay) %>%  
+  summarise(review_delay_effect = mean(rating - mu_hat - movie_effect - user_effect - genre_effect - release_year_effect))  
+
+# Predicting review delay effect on the test dataset  
+predicted.review_delay_effect <- d.test %>%  
+  left_join(avg.movies, by = "movieId") %>%  
+  left_join(avg.users, by = "userId") %>%  
+  left_join(avg.genres, by = "genres") %>%  
+  left_join(avg.years, by = "year") %>%  
+  left_join(avg.delays, by = "reviewDelay") %>%  
+  mutate(pred = mu_hat + movie_effect + user_effect + genre_effect + release_year_effect + review_delay_effect) %>%  
+  pull(pred)  
+
+# Calculating RMSE (Root Mean Square Error) for the review delay effect model  
+rmse.delay <- RMSE(predicted.review_delay_effect, d.test$rating)  
+rmse.delay  
+```
+
+## Model 07: Regularization
+
+Regularization is used to refine our predictive models by penalizing the complexity of the model. This is done by introducing a regularization parameter, lambda, to control overfitting. We iterate over a range of lambda values to find the optimal balance.
+
+```{r}
+# Generating a sequence of lambda values for regularization  
+inc <- 0.05  
+lambdas <- seq(4, 6, inc)  
+```
+
+## Calculating RMSE for each lambda
+
+```{r}
+rmses <- sapply(lambdas, function(l){  
+
+  # Regularized calculation of movie effect  
+  movie_effect <- d.train %>%  
+    group_by(movieId) %>%  
+    summarise(movie_effect = sum(rating - mu_hat)/(n()+l))  
+ 
+  # Regularized calculation of user effect  
+  user_effect <- d.train %>%  
+    left_join(movie_effect, by="movieId") %>%  
+    group_by(userId) %>%  
+    summarise(user_effect = sum(rating - movie_effect - mu_hat)/(n()+l))  
+ 
+  # Regularized calculation of genre effect  
+  genre_effect <- d.train %>%  
+    left_join(movie_effect, by="movieId") %>%  
+    left_join(user_effect, by="userId") %>%  
+    group_by(genres) %>%  
+    summarise(genre_effect = sum(rating - movie_effect - user_effect - mu_hat)/(n()+l))  
+ 
+  # Regularized calculation of release year effect  
+  release_year_effect <- d.train %>%  
+    left_join(movie_effect, by="movieId") %>%  
+    left_join(user_effect, by="userId") %>%  
+    left_join(genre_effect, by="genres") %>%  
+    group_by(year) %>%  
+    summarise(release_year_effect = sum(rating - movie_effect - user_effect - genre_effect - mu_hat)/(n()+l))  
+ 
+  # Regularized calculation of review delay effect  
+  review_delay_effect <- d.train %>%  
+    left_join(movie_effect, by="movieId") %>%  
+    left_join(user_effect, by="userId") %>%  
+    left_join(genre_effect, by="genres") %>%  
+    left_join(release_year_effect, by="year") %>%  
+    group_by(reviewDelay) %>%  
+    summarise(review_delay_effect = sum(rating - movie_effect - user_effect - genre_effect - release_year_effect - mu_hat)/(n()+l))  
+ 
+  # Predicting ratings using the regularized effects  
+  predicted_ratings <- d.test %>%  
+    left_join(movie_effect, by="movieId") %>%  
+    left_join(user_effect, by="userId") %>%  
+    left_join(genre_effect, by="genres") %>%  
+    left_join(release_year_effect, by = "year") %>%  
+    left_join(review_delay_effect, by = "reviewDelay") %>%  
+    mutate(pred = mu_hat + movie_effect + user_effect + genre_effect + release_year_effect + review_delay_effect) %>%  
+    pull(pred)  
+
+  # Returning RMSE for each lambda value  
+  return(RMSE(predicted_ratings, d.test$rating))  
+})  
+
+# Identifying the best lambda value  
+lambda <- lambdas[which.min(rmses)]  
+# Selecting the lambda value corresponding to the smallest RMSE from the previously calculated RMSEs  
+rmse.regularized <- min(rmses)  
+
+# Visualizing Lambda vs RMSE  
+lambda_rmse_data <- as.data.frame(lambdas)  
+# Converting the lambdas vector into a dataframe  
+lambda_rmse_data$rmses <- rmses  
+# Adding the corresponding RMSEs to the dataframe  
+names(lambda_rmse_data) <- c("lambdas", "rmses")  
+
+# Creating a plot of Lambda vs RMSE  
+ggplot(lambda_rmse_data, aes(lambdas, rmses)) +
+  geom_point() +
+  xlab("Lambda") +
+  ylab("RMSE") +
+  geom_text(data = subset(lambda_rmse_data, lambdas == lambda), aes(label = lambdas), color = 'blue', 
+            size = 3.5, vjust = "inward", hjust = "inward")
+```
+
+# Model Comparison
+
+Finally, we compare the RMSE of all the models to assess their predictive performance. This helps at determining which model or combination of effects provides the most accurate predictions.
+
+```{r}
+# All resultos from models  
+# Initializing a tibble (data frame) with the result of the Naive Prediction model
+rmse.results <-  
+  tibble(Model = "Naive Prediction (Average)", RMSE = rmse.simple)  
+# 'rmse.simple' is the RMSE of the Naive Prediction model
+
+# Adding the RMSE of the model with Movie Effect
+rmse.results <- bind_rows(  
+  rmse.results, tibble(Model = "+ Movie Effect", RMSE = rmse.movie))  
+# 'rmse.movie' is the RMSE after adding the Movie Effect
+
+# Adding the RMSE of the model with User Effect
+rmse.results <- bind_rows(  
+  rmse.results, tibble(Model = "+ User Effect", RMSE = rmse.user))  
+# 'rmse.user' is the RMSE after adding the User Effect
+
+# Adding the RMSE of the model with Genre Combination Effect
+rmse.results <- bind_rows(  
+  rmse.results, tibble(Model = "+ Genre Combination Effect", RMSE = rmse.genre))  
+# 'rmse.genre' is the RMSE after adding the Genre Combination Effect
+
+# Adding the RMSE of the model with Release Year Effect
+rmse.results <- bind_rows(  
+  rmse.results, tibble(Model = "+ Release Year Effect", RMSE = rmse.year))  
+# 'rmse.year' is the RMSE after adding the Release Year Effect
+
+# Adding the RMSE of the model with Review Delay Effect
+rmse.results <- bind_rows(  
+  rmse.results, tibble(Model = "+ Review Delay Effect", RMSE = rmse.delay))  
+# 'rmse.delay' is the RMSE after adding the Review Delay Effect
+
+# Adding the RMSE of the Regularized model  
+rmse.results <- bind_rows(  
+  rmse.results, tibble(Model = "+ Regularized", RMSE = rmse.regularized))  
+# 'rmse.regularized' is the RMSE of the Regularized model  
+
+# Displaying the compiled RMSE results  
+rmse.results    
+```
+
+# Data Cleaning on Final Holdout Test Set
+
+Before applying our models to the `final_holdout_test` dataset, we perform some essential data cleaning steps. This includes converting timestamps to date format, extracting movie release years, and calculating the delay between the review date and the movie's release year.
+
+```{r}
+# Converting timestamp to date format  
+final_holdout_test <- final_holdout_test %>%  
+  mutate(reviewDate = round_date(as_datetime(timestamp), unit = "week"))  
+
+# Removing release year from the title and extracting it as a separate column  
+final_holdout_test <- final_holdout_test %>%  
+  mutate(title = str_trim(title)) %>%  
+  extract(title, c("shortTitle", "year"), regex = "^(.*) \\(([0-9 \\-]*)\\)$", remove = FALSE) %>%  
+  mutate(year = as.integer(year)) %>%  
+  select(-shortTitle)  
+
+# Calculating the delay between the movie review date and the movie's release year
+final_holdout_test <- final_holdout_test %>%  
+  mutate(reviewDelay = year(reviewDate) - year)  
+```
+
+# Applying the Regularized Model on Final Holdout Test Set
+
+Now, we apply the regularized model to the `final_holdout_test` dataset. This model incorporates the effects based on movies, users, genres, release years, and review delays. The goal is to evaluate the model's performance on this final set of data, providing a comprehensive understanding of its predictive capability.
+
+```{r}
+# Calculating the movie effect with regularization  
+movie_effect <- edx %>%  
+  group_by(movieId) %>%
+  summarise(movie_effect = sum(rating - mu_hat)/(n() + lambda))  
+
+# Calculating the user effect with regularization  
+user_effect <- edx %>%  
+  left_join(movie_effect, by = "movieId") %>%  
+  group_by(userId) %>%  
+  summarise(user_effect = sum(rating - movie_effect - mu_hat)/(n() + lambda))  
+
+# Calculating the genre effect with regularization  
+genre_effect <- edx %>%  
+  left_join(movie_effect, by = "movieId") %>%  
+  left_join(user_effect, by = "userId") %>%  
+  group_by(genres) %>%  
+  summarise(genre_effect = sum(rating - movie_effect - user_effect - mu_hat)/(n() + lambda))  
+
+# Calculating the release year effect with regularization  
+release_year_effect <- edx %>%  
+  left_join(movie_effect, by = "movieId") %>%  
+  left_join(user_effect, by = "userId") %>%  
+  left_join(genre_effect, by = "genres") %>%  
+  group_by(year) %>%  
+  summarise(release_year_effect = sum(rating - movie_effect - user_effect - genre_effect - mu_hat)/(n() + lambda))  
+
+# Calculating the review delay effect with regularization  
+review_delay_effect <- edx %>%  
+  left_join(movie_effect, by = "movieId") %>%  
+  left_join(user_effect, by = "userId") %>%  
+  left_join(genre_effect, by = "genres") %>%  
+  left_join(release_year_effect, by = "year") %>%  
+  group_by(reviewDelay) %>%  
+  summarise(review_delay_effect = sum(rating - movie_effect - user_effect - genre_effect - release_year_effect - mu_hat)/(n() + lambda))  
+```
+
+```{r}
+# Predicting ratings on final_holdout_test
+predicted.final <- final_holdout_test %>%  
+left_join(movie_effect, by = "movieId") %>%  
+left_join(user_effect, by = "userId") %>%  
+left_join(genre_effect, by = "genres") %>%  
+left_join(release_year_effect, by = "year") %>%  
+left_join(review_delay_effect, by = "reviewDelay") %>%  
+mutate(pred = mu_hat + movie_effect + user_effect + genre_effect + release_year_effect + review_delay_effect) %>%  
+pull(pred)  
+
+# Evaluating model performance on final_holdout_test
+rmse.fht <- RMSE(final_holdout_test$rating, predicted.final)  
+rmse.fht  
+```
